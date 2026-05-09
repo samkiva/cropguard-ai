@@ -1,16 +1,24 @@
+import os
+import json
+import uvicorn
+from datetime import datetime
 from fastapi import FastAPI, Form
 from fastapi.responses import PlainTextResponse
-import uvicorn
-import json
-import os
-from datetime import datetime
+import google.generativeai as genai
 
 app = FastAPI()
 
 sessions = {}
 
-# ─── All Responses ───────────────────────────────────────────
+# ─── Gemini Setup ────────────────────────────────────────────
+GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
+if GEMINI_KEY:
+    genai.configure(api_key=GEMINI_KEY)
+    model = genai.GenerativeModel("gemini-1.5-flash")
+else:
+    model = None
 
+# ─── Language Selection ──────────────────────────────────────
 LANG_SELECT = (
     "Welcome to CropGuard AI / Karibu CropGuard AI\n\n"
     "Choose your language / Chagua lugha yako:\n"
@@ -18,6 +26,7 @@ LANG_SELECT = (
     "2 - Kiswahili"
 )
 
+# ─── All Responses ───────────────────────────────────────────
 RESPONSES = {
     "en": {
         "consent": (
@@ -33,7 +42,7 @@ RESPONSES = {
             "What problem does your cow have?\n"
             "1 - Udder problem (mastitis)\n"
             "2 - Foot problem (foot rot)\n"
-            "3 - Not sure"
+            "3 - Describe it yourself (AI will analyse)"
         ),
         "q2_mastitis": (
             "Question 2/4:\n\n"
@@ -70,6 +79,11 @@ RESPONSES = {
             "2 - Two\n"
             "3 - More than two"
         ),
+        "freetext_prompt": (
+            "Please describe your cow's symptoms in your own words.\n\n"
+            "What do you see? How long has it been happening?"
+        ),
+        "thinking": "Analysing your description, please wait...",
         "invalid": "Please reply with 1, 2, or 3.",
         "consent_invalid": "Please reply YES or NO.",
         "no_consent": "OK. Send HI anytime you need help. Thank you!",
@@ -80,7 +94,11 @@ RESPONSES = {
             "We will keep improving. Thank you!"
         ),
         "followup": "Send a message in 2 days so we can follow up. Thank you!",
-        "restart": "Send HI to start again.",
+        "ai_failed": (
+            "Sorry, our AI is temporarily unavailable.\n\n"
+            "Please call the vet directly.\n"
+            "Vet helpline: 0800 720 601 (free)"
+        ),
     },
     "sw": {
         "consent": (
@@ -96,7 +114,7 @@ RESPONSES = {
             "Ng'ombe wako ana tatizo gani?\n"
             "1 - Kiwele (mastitis)\n"
             "2 - Mguu (foot rot)\n"
-            "3 - Sijui"
+            "3 - Elezea mwenyewe (AI itachambua)"
         ),
         "q2_mastitis": (
             "Swali 2/4:\n\n"
@@ -133,6 +151,11 @@ RESPONSES = {
             "2 - Wawili\n"
             "3 - Zaidi ya wawili"
         ),
+        "freetext_prompt": (
+            "Tafadhali elezea dalili za ng'ombe wako kwa maneno yako.\n\n"
+            "Unaona nini? Imekuwa kwa muda gani?"
+        ),
+        "thinking": "Inachambua maelezo yako, tafadhali subiri...",
         "invalid": "Tafadhali jibu 1, 2, au 3.",
         "consent_invalid": "Tafadhali jibu NDIO au HAPANA.",
         "no_consent": "Sawa. Tuma HABARI wakati wowote utakapotaka msaada. Asante!",
@@ -143,12 +166,79 @@ RESPONSES = {
             "Tutaboresha mfumo wetu. Asante!"
         ),
         "followup": "Tuma ujumbe baada ya siku 2 tufuatilie hali yake. Asante!",
-        "restart": "Tuma HABARI kuanza tena.",
+        "ai_failed": (
+            "Samahani, AI yetu haifanyi kazi kwa sasa.\n\n"
+            "Tafadhali piga simu daktari moja kwa moja.\n"
+            "Daktari wa mifugo: 0800 720 601 (bure)"
+        ),
     }
 }
 
-# ─── Diagnosis ───────────────────────────────────────────────
+# ─── Gemini Diagnosis ────────────────────────────────────────
+def gemini_diagnose(symptoms, lang):
+    if not model:
+        return None
 
+    if lang == "en":
+        prompt = f"""You are CropGuard AI, a dairy farming assistant in Kiambu, Kenya.
+A farmer described their cow's symptoms as: "{symptoms}"
+
+Respond in English only. Be concise and practical.
+Structure your response exactly like this:
+
+CROPGUARD AI DIAGNOSIS
+----------------------
+Problem: [most likely condition]
+Confidence: [High/Medium/Low]
+
+Do this TODAY:
+1. [step]
+2. [step]
+3. [step]
+
+[URGENT - Call vet NOW / Important - Visit agrovet today / Monitor for 2 days]
+
+Call the vet NOW if:
+- [warning sign 1]
+- [warning sign 2]
+
+Vet helpline: 0800 720 601 (free)
+
+Send a message in 2 days so we can follow up. Thank you!"""
+    else:
+        prompt = f"""Wewe ni CropGuard AI, msaidizi wa ufugaji wa ng'ombe Kiambu, Kenya.
+Mkulima ameelezea dalili za ng'ombe wake hivi: "{symptoms}"
+
+Jibu kwa Kiswahili tu. Kuwa mfupi na wa vitendo.
+Panga jibu lako hivi hasa:
+
+UCHAMBUZI WA CROPGUARD AI
+-------------------------
+Tatizo: [hali inayowezekana zaidi]
+Kiwango cha imani: [Juu/Wastani/Chini]
+
+Fanya hivi LEO:
+1. [hatua]
+2. [hatua]
+3. [hatua]
+
+[HARAKA - Piga simu daktari SASA / Muhimu - Tembelea agrovet leo / Angalia kwa siku 2]
+
+Piga simu daktari SASA kama:
+- [dalili ya onyo 1]
+- [dalili ya onyo 2]
+
+Daktari wa mifugo: 0800 720 601 (bure)
+
+Tuma ujumbe baada ya siku 2 tufuatilie. Asante!"""
+
+    try:
+        response = model.generate_content(prompt)
+        return response.text.strip()
+    except Exception:
+        return None
+
+# ─── Decision Tree Diagnosis ─────────────────────────────────
 def diagnose(session):
     lang = session.get("lang", "en")
     issue = session.get("issue")
@@ -158,20 +248,11 @@ def diagnose(session):
 
     if issue == "1":
         if severity == "3" or duration == "3":
-            if lang == "en":
-                urgency = "URGENT - Call a vet NOW"
-            else:
-                urgency = "HARAKA - Piga simu daktari WA MIFUGO SASA"
+            urgency = "URGENT - Call a vet NOW" if lang == "en" else "HARAKA - Piga simu daktari WA MIFUGO SASA"
         elif duration == "2":
-            if lang == "en":
-                urgency = "Important - Visit an agrovet today"
-            else:
-                urgency = "Muhimu - Tembelea agrovet leo"
+            urgency = "Important - Visit an agrovet today" if lang == "en" else "Muhimu - Tembelea agrovet leo"
         else:
-            if lang == "en":
-                urgency = "Monitor closely for 2 days"
-            else:
-                urgency = "Angalia kwa makini kwa siku 2"
+            urgency = "Monitor closely for 2 days" if lang == "en" else "Angalia kwa makini kwa siku 2"
 
         if lang == "en":
             return (
@@ -214,15 +295,9 @@ def diagnose(session):
 
     elif issue == "2":
         if severity == "2" or severity == "3":
-            if lang == "en":
-                urgency = "URGENT - Call a vet NOW"
-            else:
-                urgency = "HARAKA - Piga simu daktari WA MIFUGO SASA"
+            urgency = "URGENT - Call a vet NOW" if lang == "en" else "HARAKA - Piga simu daktari WA MIFUGO SASA"
         else:
-            if lang == "en":
-                urgency = "Important - Visit an agrovet today"
-            else:
-                urgency = "Muhimu - Tembelea agrovet leo"
+            urgency = "Important - Visit an agrovet today" if lang == "en" else "Muhimu - Tembelea agrovet leo"
 
         if lang == "en":
             return (
@@ -266,9 +341,8 @@ def diagnose(session):
         return R["unknown"]
 
 # ─── Case Logger ─────────────────────────────────────────────
-
 def log_case(phone, session):
-    issues = {"1": "Mastitis", "2": "Foot Rot", "3": "Unknown"}
+    issues = {"1": "Mastitis", "2": "Foot Rot", "3": "Free Text"}
     log = {
         "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         "phone_last4": phone[-4:],
@@ -277,12 +351,12 @@ def log_case(phone, session):
         "duration": session.get("duration"),
         "severity": session.get("severity"),
         "count": session.get("count"),
+        "freetext": session.get("freetext"),
     }
     with open("cases.json", "a") as f:
         f.write(json.dumps(log) + "\n")
 
 # ─── Webhook ─────────────────────────────────────────────────
-
 @app.post("/whatsapp", response_class=PlainTextResponse)
 async def whatsapp_webhook(
     From: str = Form(...),
@@ -290,10 +364,10 @@ async def whatsapp_webhook(
 ):
     phone = From.strip()
     msg = Body.strip().upper()
+    msg_raw = Body.strip()
 
     reset_words = ["HI", "HELLO", "HABARI", "START", "ANZA", "RESTART"]
 
-    # Start or restart
     if phone not in sessions or msg in reset_words:
         sessions[phone] = {"step": "lang"}
         return LANG_SELECT
@@ -330,19 +404,33 @@ async def whatsapp_webhook(
 
     # Q1
     elif step == "q1":
-        if msg in ["1", "2", "3"]:
-            session["issue"] = msg
-            if msg == "1":
-                session["step"] = "q2"
-                return R["q2_mastitis"]
-            elif msg == "2":
-                session["step"] = "q2"
-                return R["q2_footrot"]
-            else:
-                session["step"] = "q4"
-                return R["q4"]
+        if msg == "1":
+            session["issue"] = "1"
+            session["step"] = "q2"
+            return R["q2_mastitis"]
+        elif msg == "2":
+            session["issue"] = "2"
+            session["step"] = "q2"
+            return R["q2_footrot"]
+        elif msg == "3":
+            session["issue"] = "3"
+            session["step"] = "freetext"
+            return R["freetext_prompt"]
         else:
             return R["invalid"]
+
+    # Free text - Gemini
+    elif step == "freetext":
+        session["freetext"] = msg_raw
+        result = gemini_diagnose(msg_raw, lang)
+        if result:
+            log_case(phone, session)
+            del sessions[phone]
+            return result
+        else:
+            log_case(phone, session)
+            del sessions[phone]
+            return R["ai_failed"]
 
     # Q2
     elif step == "q2":
