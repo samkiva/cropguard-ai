@@ -4,7 +4,6 @@ import uvicorn
 from datetime import datetime
 from fastapi import FastAPI, Form
 from fastapi.responses import PlainTextResponse
-import google.generativeai as genai
 
 app = FastAPI()
 
@@ -12,11 +11,6 @@ sessions = {}
 
 # ─── Gemini Setup ────────────────────────────────────────────
 GEMINI_KEY = os.environ.get("GEMINI_API_KEY")
-if GEMINI_KEY:
-    genai.configure(api_key=GEMINI_KEY)
-    model = genai.GenerativeModel("gemini-1.5-flash")
-else:
-    model = None
 
 # ─── Language Selection ──────────────────────────────────────
 LANG_SELECT = (
@@ -176,7 +170,7 @@ RESPONSES = {
 
 # ─── Gemini Diagnosis ────────────────────────────────────────
 def gemini_diagnose(symptoms, lang):
-    if not model:
+    if not GEMINI_KEY:
         return None
 
     if lang == "en":
@@ -232,9 +226,14 @@ Daktari wa mifugo: 0800 720 601 (bure)
 
 Tuma ujumbe baada ya siku 2 tufuatilie. Asante!"""
 
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_KEY}"
+    payload = {
+        "contents": [{"parts": [{"text": prompt}]}]
+    }
     try:
-        response = model.generate_content(prompt)
-        return response.text.strip()
+        res = requests.post(url, json=payload, timeout=30)
+        data = res.json()
+        return data["candidates"][0]["content"]["parts"][0]["text"].strip()
     except Exception:
         return None
 
